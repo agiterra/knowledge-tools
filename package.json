@@ -1,0 +1,14 @@
+{
+  "name": "@agiterra/knowledge-tools",
+  "version": "0.1.0",
+  "description": "Schema-agnostic knowledge vault primitives — association search, journal, vault indexing, vector search. Works with any .knowledge/ directory.",
+  "exports": {
+    "./scripts/*": "./scripts/*"
+  },
+  "files": [
+    "CLAUDE.md",
+    "scripts/"
+  ],
+  "license": "MIT",
+  "author": "Tim Garthwaite <https://github.com/mividtim>"
+}
