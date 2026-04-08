@@ -49,6 +49,24 @@ def _semantic_index():
     return os.path.join(config.vault_dir(), 'meta', 'semantic-index.json')
 
 
+def _vault_label():
+    """Derive a short label from the vault path for multi-vault disambiguation.
+
+    For relative paths like '.knowledge', uses the project directory name.
+    For absolute paths, uses the parent directory name.
+    Returns empty string if vault is in CWD (single-vault, no prefix needed).
+    """
+    vd = config.vault_dir()
+    resolved = os.path.realpath(vd)
+    cwd_resolved = os.path.realpath('.')
+    parent = os.path.dirname(resolved)
+    # If vault is in CWD, no prefix needed
+    if parent == cwd_resolved:
+        return ""
+    # Use the parent directory name as label
+    return os.path.basename(parent)
+
+
 def _vectors_db():
     return os.path.join(config.vault_dir(), 'vectors.db')
 
@@ -190,8 +208,10 @@ def search_journal(keywords, limit=10):
             score += sum(0.5 for k in keywords if k in summary_lower)
 
             context_snippet = (context[:200] + "...") if context and len(context) > 200 else context
+            label = _vault_label()
+            source_id = f"{label}/journal:{jid}" if label else f"journal:{jid}"
             results.append({
-                "source": f"journal:{jid}",
+                "source": source_id,
                 "type": "journal",
                 "category": category,
                 "summary": summary,
@@ -236,8 +256,10 @@ def search_semantic_index(keywords, limit=10):
         related_count = len([r for r in entry.get("related", []) if r])
         score += min(related_count * 0.1, 0.5)
 
+        label = _vault_label()
+        source_path = f"{label}/{path}" if label else path
         results.append({
-            "source": path,
+            "source": source_path,
             "type": "vault",
             "summary": entry.get("summary", ""),
             "score": score,
@@ -282,10 +304,12 @@ def search_vectors(text, limit=10):
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
+        label = _vault_label()
         results = []
         for r in data.get("results", []):
+            src = f"{label}/{r['source']}" if label else r["source"]
             results.append({
-                "source": r["source"],
+                "source": src,
                 "type": r["type"],
                 "summary": r.get("summary", ""),
                 "score": r["score"],
@@ -308,10 +332,12 @@ def search_vectors(text, limit=10):
         spec.loader.exec_module(vector_search_mod)
         vector_search = vector_search_mod.vector_search
         raw = vector_search(text, top_k=limit)
+        label = _vault_label()
         results = []
         for r in raw:
+            src = f"{label}/{r['source']}" if label else r["source"]
             results.append({
-                "source": r["source"],
+                "source": src,
                 "type": r["type"],
                 "summary": r.get("summary", ""),
                 "score": r["score"],
