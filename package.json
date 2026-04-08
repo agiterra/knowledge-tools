@@ -1,14 +1,24 @@
 {
   "name": "@agiterra/knowledge-tools",
-  "version": "0.1.0",
-  "description": "Schema-agnostic knowledge vault primitives — association search, journal, vault indexing, vector search. Works with any .knowledge/ directory.",
+  "version": "0.2.0",
+  "description": "Knowledge vault primitives — association search, journal, vault indexing, vector search, sonnet filter.",
+  "type": "module",
   "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./association-search": "./src/association-search.ts",
+    "./journal": "./src/journal.ts",
+    "./index-vault": "./src/index-vault.ts",
+    "./sonnet-filter": "./src/sonnet-filter.ts",
     "./scripts/*": "./scripts/*"
   },
   "files": [
-    "CLAUDE.md",
+    "src/",
     "scripts/"
   ],
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
   "license": "MIT",
   "author": "Tim Garthwaite <https://github.com/mividtim>"
 }
