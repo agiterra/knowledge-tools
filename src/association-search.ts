@@ -423,6 +423,7 @@ export async function searchAssociations(text: string, opts: SearchOptions = {})
     score: r.normalized_score ?? 0,
     summary: r.summary,
     matched_keywords: r.matched_keywords,
+    search_method: r.search_method,
   }));
 
   return {
