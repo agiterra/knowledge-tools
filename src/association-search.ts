@@ -12,7 +12,7 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, statSync } from "fs";
-import { join } from "path";
+import { dirname, join, resolve } from "path";
 import { vaultDir } from "./config";
 
 // ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ export async function searchVectors(text: string, limit = 10): Promise<Associati
   const vdb = vectorsDb();
   if (!existsSync(vdb)) return [];
 
-  const vaultPath = join(vaultDir());
+  const vaultPath = resolve(dirname(vdb));
 
   try {
     const resp = await fetch(`${VECTOR_SERVICE_URL}/search`, {
