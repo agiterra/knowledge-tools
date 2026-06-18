@@ -26,8 +26,9 @@ if [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ]; then
     exit 0  # Don't fail — compaction should proceed
 fi
 
-# Determine knowledge vault directory
-MEMORY_DIR="$CWD/${KNOWLEDGE_VAULT:-.knowledge}"
+# Determine knowledge vault directory (shared primitive — absolute KNOWLEDGE_VAULT wins)
+. "$(cd "$(dirname "$0")" && pwd)/resolve-vault.sh"
+MEMORY_DIR="$VAULT_DIR"
 if [ ! -d "$MEMORY_DIR" ]; then
     # Not a knowledge-vault-managed project — skip silently
     exit 0

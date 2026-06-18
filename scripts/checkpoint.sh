@@ -38,14 +38,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-VAULT_NAME="${KNOWLEDGE_VAULT:-.knowledge}"
-VAULT_DIR="$CWD/$VAULT_NAME"
+# Resolve the vault dir via the shared primitive (absolute KNOWLEDGE_VAULT wins —
+# cwd-independent; else $CWD/.knowledge). Single source of truth for all consumers.
+. "$(cd "$(dirname "$0")" && pwd)/resolve-vault.sh"
 
 if [ ! -d "$VAULT_DIR" ]; then
     exit 0
 fi
 
-cd "$CWD"
+# Operate in the vault's OWN dir/repo (differs from CWD when KNOWLEDGE_VAULT is absolute).
+cd "$(dirname "$VAULT_DIR")"
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     exit 0
@@ -58,9 +60,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JOURNAL_PY="$SCRIPT_DIR/journal.py"
 
 if [ -f "$VAULT_DIR/journal.db" ] && [ -f "$JOURNAL_PY" ]; then
-    # journal.py backup operates from the vault's parent dir (it reads
-    # ${KNOWLEDGE_VAULT:-.knowledge}/journal.db relative to cwd).
-    (cd "$CWD" && KNOWLEDGE_VAULT="$VAULT_NAME" python3 "$JOURNAL_PY" backup >/dev/null 2>&1 || true)
+    # journal.py reads $KNOWLEDGE_VAULT/journal.db; VAULT_DIR is absolute, so no cd needed.
+    (KNOWLEDGE_VAULT="$VAULT_DIR" python3 "$JOURNAL_PY" backup >/dev/null 2>&1 || true)
 fi
 
 # --- Step 2 & 3: add + commit ---
