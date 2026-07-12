@@ -563,6 +563,13 @@ if __name__ == '__main__':
         category = argv[1]
         summary = argv[2]
         context = argv[3]
+        # <category> <summary> <context> are positional; a flag landing in one
+        # of those slots means the caller used flag syntax — the flag strings
+        # would be stored literally and the real values dropped (silent data loss).
+        if any(v.startswith('--') for v in (category, summary, context)):
+            print('journal.py add: <category> <summary> <context> are positional; flags come after them')
+            print('Usage: journal.py add <category> <summary> <context> [--source X] [--tags a,b] [--refs 1,2]')
+            sys.exit(1)
         # Parse optional flags
         source = tags = refs = None
         i = 4
@@ -577,7 +584,9 @@ if __name__ == '__main__':
                 refs = argv[i + 1]
                 i += 2
             else:
-                i += 1
+                print(f'journal.py add: unrecognized argument: {argv[i]}')
+                print('Usage: journal.py add <category> <summary> <context> [--source X] [--tags a,b] [--refs 1,2]')
+                sys.exit(1)
         cmd_add(category, summary, context, source, tags, refs)
 
     elif cmd == 'get':
