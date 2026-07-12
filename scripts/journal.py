@@ -28,10 +28,12 @@ Usage:
   python3 scripts/journal.py backup
   python3 scripts/journal.py dump
   python3 scripts/journal.py rebuild [sql-file] [--force]
+  python3 scripts/journal.py migrate
   python3 scripts/journal.py stats
 """
 
 import os
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -136,6 +138,63 @@ def cmd_init():
     conn.executescript(SCHEMA)
     conn.close()
     print(f'Journal initialized at {db}')
+
+
+def cmd_migrate():
+    """Migrate a legacy journal.db (id, created_at, category, body) to the current schema."""
+    db = _db_path()
+    if not os.path.exists(db):
+        print(f'No journal at {db} — nothing to migrate.')
+        sys.exit(1)
+    conn = get_db()
+    cols = {r[1] for r in conn.execute('PRAGMA table_info(journal)').fetchall()}
+    if {'timestamp', 'summary', 'context'} <= cols:
+        print('Schema is already current — nothing to migrate.')
+        conn.close()
+        return
+    if not {'id', 'created_at', 'category', 'body'} <= cols:
+        print(f'Unrecognized journal schema (columns: {sorted(cols)}) — refusing to guess. Migrate manually.')
+        conn.close()
+        sys.exit(1)
+    rows = conn.execute('SELECT id, created_at, category, body FROM journal ORDER BY id').fetchall()
+    conn.close()
+
+    backup = db + '.bak-migrate-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+    shutil.copy2(db, backup)
+    print(f'Backup: {backup} ({len(rows)} legacy entries)')
+
+    conn = get_db()
+    conn.executescript(
+        'DROP TRIGGER IF EXISTS journal_ai;'
+        'DROP TRIGGER IF EXISTS journal_ad;'
+        'DROP TRIGGER IF EXISTS journal_au;'
+        'DROP TABLE IF EXISTS journal_fts;'
+        'ALTER TABLE journal RENAME TO journal_legacy;'
+    )
+    conn.executescript(SCHEMA)
+    for r in rows:
+        body = (r['body'] or '').strip()
+        first = body.split('\n', 1)[0].strip()
+        summary = first if len(first) <= 120 else first[:117] + '...'
+        ts = '' if r['created_at'] is None else str(r['created_at'])
+        if ts.isdigit():  # epoch seconds or milliseconds
+            secs = int(ts) / 1000 if len(ts) >= 13 else int(ts)
+            ts = datetime.fromtimestamp(secs, tz=timezone.utc).isoformat()
+        conn.execute(
+            'INSERT INTO journal (id, timestamp, category, summary, context) VALUES (?, ?, ?, ?, ?)',
+            (r['id'], ts, r['category'], summary or '(no summary)', body or '(empty)'),
+        )
+    conn.commit()
+    n_new = conn.execute('SELECT count(*) FROM journal').fetchone()[0]
+    n_fts = conn.execute('SELECT count(*) FROM journal_fts').fetchone()[0]
+    if n_new != len(rows):
+        conn.close()
+        print(f'MIGRATION MISMATCH: {len(rows)} legacy rows but {n_new} migrated — journal_legacy table kept, db NOT finalized. Restore from {backup} or investigate.')
+        sys.exit(1)
+    conn.execute('DROP TABLE journal_legacy')
+    conn.commit()
+    conn.close()
+    print(f'Migrated {n_new} entries (FTS rows: {n_fts}). body → context, summary = first line. Backup kept at {backup}')
 
 
 def cmd_add(category, summary, context, source=None, tags=None, refs=None):
@@ -527,6 +586,7 @@ Commands:
   backup                                    Safe dump: verify then atomically replace journal.sql
   dump                                      Export to journal.sql (prefer 'backup' for safety)
   rebuild [sql-file]                        Rebuild db from SQL dump (validates before deletion)
+  migrate                                   Migrate legacy schema (created_at/body) to current; backs up first
   stats                                     Show statistics
 
 Categories: learning, correction, decision, experiment, conversation
@@ -640,6 +700,9 @@ if __name__ == '__main__':
 
     elif cmd == 'stats':
         cmd_stats()
+
+    elif cmd == 'migrate':
+        cmd_migrate()
 
     else:
         print(f'Unknown command: {cmd}')
