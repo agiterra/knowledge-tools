@@ -316,51 +316,132 @@ def cmd_misses():
         print()
 
 
-def cmd_prune(apply=False):
-    """Remove index entries whose FILE NO LONGER EXISTS.
+PLACEHOLDER_PREFIXES = (
+    'Personal operational guidance:',
+    'Knowledge entry:',
+    'Incident observation log:',
+    'Runtime state snapshot',
+)
 
-    Nothing ever removed these, so the index accumulated summaries for deleted
-    files and RECALL SERVED THEM. Measured 2026-07-31: 13 dangling entries on one
-    vault, including `.knowledge/identity.md` (deleted) and paths under an old
-    vault root that had been moved months earlier -- and the association hook
-    surfaced them during a live session.
 
-    That is the worst kind of recall result: a PLAUSIBLE, WELL-FORMED summary of
-    something that does not exist, with no source to check it against. It reads
-    exactly like a real hit.
+def _is_thin(candidate, reference):
+    """True if candidate looks auto-generated or materially poorer than reference."""
+    if not candidate:
+        return True
+    if candidate.startswith(PLACEHOLDER_PREFIXES):
+        return True
+    return len(candidate) < len(reference) * 0.6
 
-    Dry-run by default. Only entries whose path is missing are removed -- the
-    summaries are LLM-generated and expensive to regenerate, so this never
-    touches an entry whose file is still present.
+
+def cmd_prune(apply=False, delete_orphans=False):
+    """Remove index entries whose file is gone -- RESCUING CONTENT FIRST.
+
+    THE NAIVE VERSION OF THIS WAS DANGEROUS AND A DRY RUN CAUGHT IT (Brioche,
+    2026-07-31). Deleting every entry whose path is missing is correct about
+    PATHS and catastrophic about CONTENT. On his vault 214 of 983 entries were
+    dangling -- but 78 were files MOVED by a restructure, whose new paths had
+    been re-indexed with AUTO-GENERATED PLACEHOLDER summaries while the old
+    entries still held the good hand-written ones:
+
+        stale .knowledge/feedback/ci-not-triggering-checklist.md
+              "When CI jobs show SKIPPED, check draft status, diff preconditions"
+        live  .knowledge/ci-not-triggering-checklist.md
+              "Knowledge entry: ci not triggering checklist"       <- placeholder
+
+    Prune-by-file-existence deletes the RICH entry and keeps the USELESS one, and
+    nothing would ever say so -- the file exists, so the live entry looks healthy.
+    It would have destroyed 63 hand-written summaries.
+
+    THE QUESTION IS NOT "does this path exist" BUT "is this KNOWLEDGE still
+    represented". So dangling entries are classified:
+
+      DUPLICATE -- a live entry shares the basename. Rescue the summary onto it
+                   when the live one is a placeholder or materially thinner,
+                   union the keyword sets either way, then drop the stale entry.
+      ORPHAN    -- nothing live carries that basename. NOT deleted by default:
+                   the entry may be the last trace of a note consolidated
+                   elsewhere. Preserve-then-delete.
+
+    Dry-run by default. --apply rescues and removes duplicates; --delete-orphans
+    is a separate explicit opt-in.
     """
     idx = _index_file()
     try:
         with open(idx, 'r') as f:
             data = json.load(f)
     except Exception as exc:
-        print(f'index-vault prune: cannot read {idx}: {exc}')
+        print('index-vault prune: cannot read %s: %s' % (idx, exc))
         return 2
 
     entries = data.get('entries', {})
-    missing = [k for k in entries if not os.path.exists(k)]
-    if not missing:
-        print(f'index-vault prune: 0 dangling of {len(entries)} entries — nothing to do.')
+    dangling = [k for k in entries if not os.path.exists(k)]
+    if not dangling:
+        print('index-vault prune: 0 dangling of %d entries -- nothing to do.' % len(entries))
         return 0
 
-    for k in missing:
-        print(f'  DANGLING: {k}')
+    live_by_base = {}
+    for k in entries:
+        if os.path.exists(k):
+            live_by_base.setdefault(os.path.basename(k), []).append(k)
+
+    duplicates, orphans = [], []
+    for k in dangling:
+        (duplicates if live_by_base.get(os.path.basename(k)) else orphans).append(k)
+
+    rescued = merged = 0
+    for k in duplicates:
+        stale = entries[k]
+        for live in live_by_base[os.path.basename(k)]:
+            cur = entries[live]
+            s_sum = str(stale.get('summary', ''))
+            l_sum = str(cur.get('summary', ''))
+            print('  DUPLICATE: %s' % k)
+            print('      -> live: %s' % live)
+            if _is_thin(l_sum, s_sum):
+                print('      RESCUE summary (live is a placeholder or materially thinner)')
+                print('         stale: %s' % s_sum[:90])
+                print('         live : %s' % l_sum[:90])
+                if apply:
+                    cur['summary'] = s_sum
+                rescued += 1
+            s_kw = set(stale.get('keywords') or [])
+            l_kw = set(cur.get('keywords') or [])
+            if s_kw - l_kw:
+                print('      MERGE %d keyword(s) missing from the live entry' % len(s_kw - l_kw))
+                if apply:
+                    cur['keywords'] = sorted(l_kw | s_kw)
+                merged += 1
+
+    for k in orphans:
+        print('  ORPHAN (no live counterpart): %s' % k)
+        print('      %s' % str(entries[k].get('summary', ''))[:90])
+
     if not apply:
-        print(f'index-vault prune: {len(missing)} dangling of {len(entries)}. '
-              f'DRY RUN — re-run with --apply to remove them.')
+        print('')
+        print('index-vault prune: %d dangling of %d -- %d DUPLICATE, %d ORPHAN.'
+              % (len(dangling), len(entries), len(duplicates), len(orphans)))
+        print('DRY RUN. --apply rescues content and removes duplicates; orphans')
+        print('additionally need --delete-orphans (they may be the last trace of')
+        print('a note that was consolidated elsewhere).')
         return 1
 
-    for k in missing:
+    for k in duplicates:
         del entries[k]
+    removed_orphans = 0
+    if delete_orphans:
+        for k in orphans:
+            del entries[k]
+        removed_orphans = len(orphans)
+
     data['entries'] = entries
     with open(idx, 'w') as f:
         json.dump(data, f, indent=2)
-    print(f'index-vault prune: removed {len(missing)} dangling entries, '
-          f'{len(entries)} remain.')
+    tail = ((', removed %d orphans' % removed_orphans) if delete_orphans
+            else ', LEFT %d orphans in place' % len(orphans))
+    print('')
+    print('index-vault prune: rescued %d summaries, merged %d keyword sets, '
+          'removed %d duplicates%s. %d entries remain.'
+          % (rescued, merged, len(duplicates), tail, len(entries)))
     return 0
 
 
@@ -437,7 +518,8 @@ if __name__ == '__main__':
     if cmd == 'scan':
         cmd_scan()
     elif cmd == 'prune':
-        sys.exit(cmd_prune(apply='--apply' in args))
+        sys.exit(cmd_prune(apply='--apply' in args,
+                           delete_orphans='--delete-orphans' in args))
     elif cmd == 'file':
         if len(args) < 2:
             print('Usage: index-vault.py file <path>')
