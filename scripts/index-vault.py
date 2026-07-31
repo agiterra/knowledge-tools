@@ -316,6 +316,54 @@ def cmd_misses():
         print()
 
 
+def cmd_prune(apply=False):
+    """Remove index entries whose FILE NO LONGER EXISTS.
+
+    Nothing ever removed these, so the index accumulated summaries for deleted
+    files and RECALL SERVED THEM. Measured 2026-07-31: 13 dangling entries on one
+    vault, including `.knowledge/identity.md` (deleted) and paths under an old
+    vault root that had been moved months earlier -- and the association hook
+    surfaced them during a live session.
+
+    That is the worst kind of recall result: a PLAUSIBLE, WELL-FORMED summary of
+    something that does not exist, with no source to check it against. It reads
+    exactly like a real hit.
+
+    Dry-run by default. Only entries whose path is missing are removed -- the
+    summaries are LLM-generated and expensive to regenerate, so this never
+    touches an entry whose file is still present.
+    """
+    idx = _index_file()
+    try:
+        with open(idx, 'r') as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f'index-vault prune: cannot read {idx}: {exc}')
+        return 2
+
+    entries = data.get('entries', {})
+    missing = [k for k in entries if not os.path.exists(k)]
+    if not missing:
+        print(f'index-vault prune: 0 dangling of {len(entries)} entries — nothing to do.')
+        return 0
+
+    for k in missing:
+        print(f'  DANGLING: {k}')
+    if not apply:
+        print(f'index-vault prune: {len(missing)} dangling of {len(entries)}. '
+              f'DRY RUN — re-run with --apply to remove them.')
+        return 1
+
+    for k in missing:
+        del entries[k]
+    data['entries'] = entries
+    with open(idx, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f'index-vault prune: removed {len(missing)} dangling entries, '
+          f'{len(entries)} remain.')
+    return 0
+
+
 def cmd_stats():
     """Print index statistics."""
     index = load_index()
@@ -388,6 +436,8 @@ if __name__ == '__main__':
 
     if cmd == 'scan':
         cmd_scan()
+    elif cmd == 'prune':
+        sys.exit(cmd_prune(apply='--apply' in args))
     elif cmd == 'file':
         if len(args) < 2:
             print('Usage: index-vault.py file <path>')
