@@ -94,9 +94,21 @@ def cmd_scan():
     files = vault_files()
     needs_indexing = []
 
+    unreadable = []
     for fpath in files:
-        with open(fpath, 'r') as f:
-            text = f.read()
+        # A SCAN MUST NOT DIE ON ONE UNREADABLE FILE. One 0600 file in a vault
+        # (a deliberately-restricted security report) crashed the whole scan for
+        # any other uid -- and the caller's `grep -c NEEDS_INDEX` on a crashed
+        # run returns 0, which is INDISTINGUISHABLE FROM "nothing outstanding".
+        # A partial answer that names what it could not read beats an exception
+        # that a consumer silently rounds to zero.
+        try:
+            with open(fpath, 'r') as f:
+                text = f.read()
+        except OSError as exc:
+            unreadable.append(fpath)
+            print('UNREADABLE: %s (%s)' % (fpath, exc.__class__.__name__))
+            continue
         h = content_hash(text)
         entry = index['entries'].get(fpath)
         if entry and entry.get('content_hash') == h:
@@ -109,6 +121,9 @@ def cmd_scan():
             print(f'  | {line}')
         print()
 
+    if unreadable:
+        print('\n%d file(s) UNREADABLE by %s — not examined, NOT counted as indexed.'
+              % (len(unreadable), __import__('getpass').getuser()))
     if not needs_indexing:
         print('All files indexed and up to date.')
     else:
