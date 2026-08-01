@@ -68,28 +68,67 @@ fi
 # Stage the entire vault subdir. Then commit only if there are staged changes.
 git add -- "$VAULT_DIR"
 
+# ★★★ DO NOT `exit 0` HERE (2026-08-01). This used to bail out when the vault
+# was unchanged — which skipped the push step below entirely. "Nothing new to
+# COMMIT" is not "nothing to PUSH": any commit made outside the vault (a tool
+# fix, a patch, a script) then sat unpushed indefinitely, and checkpoint exited
+# 0 and printed nothing, so it read as a successful checkpoint.
+#
+# Observed: three code commits stayed local and only reached origin because a
+# vault change happened to accompany a later run. The durability guarantee this
+# script exists to provide was silently conditional on unrelated vault activity.
+#
+# ⇒ Fall through to the push. The commit is what is conditional, not the push.
 if git diff --cached --quiet -- "$VAULT_DIR"; then
-    # Nothing changed under the vault — bail out cleanly.
-    exit 0
+    VAULT_UNCHANGED=1
+else
+    VAULT_UNCHANGED=0
+    if [ -z "$MSG" ]; then
+        TS=$(date +%Y-%m-%d\ %H:%M)
+        MSG="Checkpoint vault ($TS)"
+    fi
+    git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null
 fi
-
-if [ -z "$MSG" ]; then
-    TS=$(date +%Y-%m-%d\ %H:%M)
-    MSG="Checkpoint vault ($TS)"
-fi
-
-git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null
 
 # --- Step 4: push ---
+# ⚠️ Reached even when the vault was unchanged — see the note above.
 if [ "$PUSH" = "1" ]; then
     if git remote get-url origin >/dev/null 2>&1; then
-        if ! git push -q 2>/dev/null; then
-            if [ "$STRICT" = "1" ]; then
-                echo "checkpoint: git push failed" >&2
-                exit 1
-            fi
+        # ★★ NEVER SWALLOW THE FAILURE. This used to run `git push -q 2>/dev/null`
+        # and, in the default non-strict mode, print NOTHING when the push failed:
+        # stderr was discarded and the only `echo` lived behind `STRICT=1`. A push
+        # that failed and a push that succeeded were byte-identical to the caller.
+        # ⇒ Capture stderr and always SAY something; --strict still controls
+        # whether a failure is fatal, but never whether it is REPORTED.
+        if ! push_err=$(git push 2>&1); then
+            echo "checkpoint: git push FAILED — the vault is committed locally but NOT on origin." >&2
+            printf '%s\n' "$push_err" | sed 's/^/  /' >&2
+            [ "$STRICT" = "1" ] && exit 1
         fi
+    else
+        # ★ Say it. An absent remote is a legitimate configuration, but silence
+        # here is indistinguishable from a successful push.
+        echo "checkpoint: no 'origin' remote — committed locally only, nothing pushed." >&2
     fi
 fi
 
-echo "checkpoint: vault committed at $(git rev-parse --short HEAD)"
+# ★ Report what actually happened, and ONLY what actually happened.
+#
+# ⚠️ The "vault committed at <HEAD>" line below used to be UNCONDITIONAL. That
+# was harmless only because the old `exit 0` above made it unreachable whenever
+# nothing was committed. Removing that early exit made it reachable — so it
+# began announcing a commit that had not occurred, printing whatever HEAD
+# happened to be. A silent-failure fix that introduces a FALSE REPORT is a worse
+# trade: silence is ambiguous, a confident wrong statement is not.
+# ⇒ Each branch now states only its own case, and the sha is printed only when
+# this run actually created it.
+unpushed=$(git rev-list --count @{u}..HEAD 2>/dev/null || echo "?")
+if [ "$VAULT_UNCHANGED" = "1" ]; then
+    if [ "$PUSH" = "1" ]; then
+        echo "checkpoint: vault unchanged, nothing to commit (${unpushed} unpushed commit(s) remaining)"
+    else
+        echo "checkpoint: vault unchanged, nothing to commit (--no-push; ${unpushed} unpushed commit(s))"
+    fi
+else
+    echo "checkpoint: vault committed at $(git rev-parse --short HEAD) (${unpushed} unpushed commit(s) remaining)"
+fi
