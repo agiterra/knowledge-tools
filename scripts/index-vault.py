@@ -121,6 +121,16 @@ def cmd_scan():
             print(f'  | {line}')
         print()
 
+    # ★ ALWAYS STATE HOW MANY FILES WERE EXAMINED. "All files indexed and up to
+    # date" after scanning ZERO files is indistinguishable from a genuinely clean
+    # vault -- and that is exactly what a caller running from the wrong cwd got:
+    # an empty scan, exit 0, and a consumer that counted 0 NEEDS_INDEX and called
+    # it healthy. A count of what was looked at is the only thing that separates
+    # "nothing to report" from "I looked at nothing".
+    print('SCANNED: %d file(s)' % len(files))
+    if not files:
+        print('SCANNED-ZERO: no vault files found from %s — this is NOT a clean '
+              'vault, it is an empty or wrong working directory.' % os.getcwd())
     if unreadable:
         print('\n%d file(s) UNREADABLE by %s — not examined, NOT counted as indexed.'
               % (len(unreadable), __import__('getpass').getuser()))
