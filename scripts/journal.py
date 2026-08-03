@@ -34,6 +34,7 @@ Usage:
 
 import os
 import shutil
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -409,9 +410,25 @@ def cmd_backup():
         conn.close()
         return False
 
-    # 2. Dump SQL to temp file
+    # 2. Dump SQL to temp file.
+    #    iterdump() emits the FTS5 shadow tables (journal_fts_data/idx/content/
+    #    docsize/config) as literal CREATE TABLEs. On reload, CREATE VIRTUAL TABLE
+    #    creates them itself, so the explicit ones collide with
+    #    "object name reserved for internal use" and the whole script aborts.
+    #    They are DERIVED state: drop them and rebuild the index on load instead.
+    #    Filter whole STATEMENTS (iterdump yields one per item) and anchor on the
+    #    statement's TARGET -- a substring test also matches journal rows whose
+    #    text merely mentions a shadow table, silently dropping those entries.
+    _SHADOW = re.compile(
+        r'''^\s*(?:CREATE\s+TABLE|INSERT\s+INTO)\s+["'`\[]?'''
+        r'''journal_fts_(?:data|idx|content|docsize|config)\b''',
+        re.I,
+    )
     raw_conn = sqlite3.connect(db)
-    dump = '\n'.join(raw_conn.iterdump())
+    dump = '\n'.join(
+        stmt for stmt in raw_conn.iterdump() if not _SHADOW.match(stmt)
+    )
+    dump += "\nINSERT INTO journal_fts(journal_fts) VALUES('rebuild');"
     raw_conn.close()
     conn.close()
 
@@ -428,31 +445,28 @@ def cmd_backup():
             print(f'Temp file preserved at {tmp_path} for inspection.')
             return False
 
-        # 4. Verify: rebuild from temp into in-memory DB and count
-        # Filter out FTS virtual table statements that can fail in memory
-        verify_sql = '\n'.join(
-            line for line in dump.split('\n')
-            if not any(kw in line.upper() for kw in [
-                'CREATE VIRTUAL TABLE', 'JOURNAL_FTS', 'CREATE TRIGGER'
-            ])
-        )
+        # 4. Verify by reloading THE ACTUAL DUMP -- unmodified.
+        #    The previous implementation filtered the dump line-by-line before
+        #    verifying, which (a) tested a different artifact than the one being
+        #    written and (b) shredded multi-line CREATE TRIGGER bodies into a
+        #    syntax error. It then caught that error and fell back to counting
+        #    INSERT statements while still printing "(verified)" -- a check that
+        #    could not run, silently downgraded to a weaker one, reporting green.
+        #    A backup that has not been restored is not a backup: fail loudly.
         try:
             verify_conn = sqlite3.connect(':memory:')
-            verify_conn.executescript(verify_sql)
+            verify_conn.executescript(dump)
             verify_count = verify_conn.execute('SELECT COUNT(*) FROM journal').fetchone()[0]
             verify_conn.close()
+        except sqlite3.Error as e:
+            print(f'VERIFICATION FAILED: dump does not reload ({e}).')
+            print(f'Temp file preserved at {tmp_path} for inspection.')
+            return False
 
-            if verify_count != db_count:
-                print(f'VERIFICATION FAILED: DB has {db_count} entries but rebuilt dump has {verify_count}.')
-                print(f'Temp file preserved at {tmp_path} for inspection.')
-                return False
-        except sqlite3.OperationalError as e:
-            # If in-memory verification fails, fall back to INSERT count check
-            print(f'Note: in-memory verification skipped ({e}), using INSERT count only.')
-            if insert_count < db_count:
-                print(f'VERIFICATION FAILED: INSERT count {insert_count} < DB count {db_count}.')
-                print(f'Temp file preserved at {tmp_path} for inspection.')
-                return False
+        if verify_count != db_count:
+            print(f'VERIFICATION FAILED: DB has {db_count} entries but reloaded dump has {verify_count}.')
+            print(f'Temp file preserved at {tmp_path} for inspection.')
+            return False
 
         # 5. Atomically replace dump_path
         os.makedirs(os.path.dirname(dump_path), exist_ok=True)
@@ -486,7 +500,13 @@ def cmd_rebuild(sql_file=None, force=False):
     with open(sql_file, 'r') as f:
         sql = f.read()
 
-    insert_count = sql.count('INSERT INTO "journal"')
+    #    Count BOTH quoting forms. This guard is load-bearing -- it is what stops
+    #    a 0-entry dump from replacing a populated journal -- and substring-matching
+    #    a single dialect means it silently stops applying if anything ever writes
+    #    the dump by another route. A guard whose firing depends on a quoting
+    #    convention is not a guard.
+    insert_count = len(re.findall(
+        r'INSERT\s+INTO\s+["\'`\[]?journal["\'`\]]?\s*(?:\(|VALUES)', sql, re.I))
     if insert_count == 0 and os.path.exists(db) and not force:
         db_count = sqlite3.connect(db).execute('SELECT COUNT(*) FROM journal').fetchone()[0]
         if db_count > 0:
@@ -494,30 +514,68 @@ def cmd_rebuild(sql_file=None, force=False):
             print(f'This would destroy data. Run "backup" first, or pass --force to override.')
             return False
 
-    # Back up existing DB before deletion
-    if os.path.exists(db):
-        backup_path = db + '.bak'
-        shutil.copy2(db, backup_path)
-
-    # Remove existing db to rebuild clean
-    if os.path.exists(db):
-        os.remove(db)
-
-    conn = sqlite3.connect(db)
-    conn.executescript(sql)
-    conn.close()
+    # Build into a TEMP path and swap only after the result verifies.
+    #
+    # The previous implementation deleted the live DB first and called
+    # executescript() OUTSIDE any try -- so a malformed dump killed the process
+    # with a traceback having already removed the journal, and the restore
+    # handler was never reached. Restoring from .bak is RECOVERY; not deleting
+    # is PREVENTION. A recovery path that the next retry can clobber is one
+    # incident away from being no mechanism at all. (Shape credit: Fondant.)
+    #
+    # With temp-then-swap, a bad dump leaves the live journal untouched and
+    # there is no recovery path that has to be correct.
+    tmp_db = db + '.rebuild.tmp'
+    if os.path.exists(tmp_db):
+        os.remove(tmp_db)
 
     try:
-        count = sqlite3.connect(db).execute('SELECT COUNT(*) FROM journal').fetchone()[0]
-    except sqlite3.OperationalError:
-        print(f'ERROR: Rebuilt DB has no journal table. SQL file may be invalid.')
-        # Restore backup if available
-        backup_path = db + '.bak'
-        if os.path.exists(backup_path):
-            shutil.copy2(backup_path, db)
-            print(f'Restored from backup at {backup_path}')
+        conn = sqlite3.connect(tmp_db)
+        conn.executescript(sql)
+        conn.close()
+        count = sqlite3.connect(tmp_db).execute(
+            'SELECT COUNT(*) FROM journal').fetchone()[0]
+    except sqlite3.Error as e:
+        print(f'ERROR: rebuild failed ({e}). SQL file may be invalid.')
+        print(f'Live journal at {db} is UNTOUCHED.')
+        if os.path.exists(tmp_db):
+            os.remove(tmp_db)
         return False
 
+    # Refuse a REGRESSION, not merely an empty result. A dump that is perfectly
+    # valid but truncated silently replaces the journal with a fraction of
+    # itself -- worse than the crash, because nothing errors. Checking only
+    # `count == 0` catches total loss and misses partial loss entirely.
+    #    AN ABSENT COUNT IS NOT A ZERO. Coercing an unreadable live DB to 0 makes
+    #    `count < live_count` unsatisfiable and silently disables this guard --
+    #    in exactly the situation that makes anyone run rebuild at all. Nobody
+    #    rebuilds a healthy journal; they rebuild when the live DB is already in
+    #    trouble, which is precisely the corrupt/locked/permission-denied case.
+    #    A file that is PRESENT AND UNREADABLE is more alarming than one that is
+    #    absent, so it must refuse rather than proceed. (Caught by Fondant.)
+    if os.path.exists(db) and not force:
+        try:
+            live_count = sqlite3.connect(db).execute(
+                'SELECT COUNT(*) FROM journal').fetchone()[0]
+        except sqlite3.Error as e:
+            print(f'REFUSED: live journal at {db} exists but is unreadable ({e}), '
+                  f'so it cannot be compared against the {count} entries in the dump.')
+            print('Live journal is UNTOUCHED. Pass --force to replace it anyway.')
+            os.remove(tmp_db)
+            return False
+        if count < live_count:
+            print(f'REFUSED: rebuilt DB has {count} entries but live journal has '
+                  f'{live_count}. Live journal at {db} is UNTOUCHED.')
+            print('Pass --force if you intend to restore an older snapshot.')
+            os.remove(tmp_db)
+            return False
+
+    # Keep a .bak as a convenience, but it is no longer the thing standing
+    # between a bad dump and data loss.
+    if os.path.exists(db):
+        shutil.copy2(db, db + '.bak')
+
+    os.replace(tmp_db, db)          # atomic within a filesystem
     print(f'Rebuilt {db} from {sql_file} ({count} entries)')
     return True
 
