@@ -1,6 +1,6 @@
 {
   "name": "@agiterra/knowledge-tools",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Knowledge vault primitives \u2014 association search, journal, vault indexing, vector search, sonnet filter.",
   "type": "module",
   "exports": {

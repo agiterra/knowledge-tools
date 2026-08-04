@@ -81,6 +81,18 @@ fi
 git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null
 
 # --- Step 4: push ---
+# THE FINAL LINE MUST STATE THE DURABILITY OUTCOME, NOT JUST THE COMMIT.
+# Before 2026-08-04 a non-strict push failure was swallowed in COMPLETE SILENCE and
+# this script still printed "checkpoint: vault committed at <sha>". That sentence is
+# TRUE and the reader infers "...and pushed" - so a swallowed failure read as success.
+# It bit mid-incident: checkpoint reported committed, the vault was NOT on the remote,
+# and it was only caught by comparing local HEAD against `git ls-remote` instead of
+# trusting the exit code.
+# => Swallowing a failure is a POLICY CHOICE (that is what non-strict means) and is
+# fine. SAYING NOTHING ABOUT IT IS NOT. Report the outcome in every branch - the whole
+# point of this script is durability, so "did it become durable" is the one fact it
+# must never leave ambiguous.
+PUSH_STATE=""
 if [ "$PUSH" = "1" ]; then
     if git remote get-url origin >/dev/null 2>&1; then
         if ! git push -q 2>/dev/null; then
@@ -88,8 +100,15 @@ if [ "$PUSH" = "1" ]; then
                 echo "checkpoint: git push failed" >&2
                 exit 1
             fi
+            PUSH_STATE="NOT PUSHED - push failed (non-strict: continuing; --strict would exit 1)"
+        else
+            PUSH_STATE="pushed"
         fi
+    else
+        PUSH_STATE="NOT PUSHED - no 'origin' remote"
     fi
+else
+    PUSH_STATE="not pushed (--no-push)"
 fi
 
-echo "checkpoint: vault committed at $(git rev-parse --short HEAD)"
+echo "checkpoint: vault committed at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
