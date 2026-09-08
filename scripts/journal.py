@@ -419,16 +419,41 @@ def cmd_backup():
     #    Filter whole STATEMENTS (iterdump yields one per item) and anchor on the
     #    statement's TARGET -- a substring test also matches journal rows whose
     #    text merely mentions a shadow table, silently dropping those entries.
-    _SHADOW = re.compile(
-        r'''^\s*(?:CREATE\s+TABLE|INSERT\s+INTO)\s+["'`\[]?'''
-        r'''journal_fts_(?:data|idx|content|docsize|config)\b''',
+    # FTS is DERIVED state. Strip ALL fts objects from iterdump (virtual table, shadow tables,
+    # triggers) and recreate FTS canonically AFTER the journal table+data, THEN rebuild. Correct
+    # whether the source DB HAS journal_fts or PREDATES it: an old DB with only the journal table
+    # (no FTS, no triggers) previously got an UNCONDITIONAL `INSERT INTO journal_fts(...'rebuild')`
+    # appended, referencing a table the dump never created, so reload died "no such table:
+    # journal_fts" (Brioche 606820, her j:688 vault). Now the CREATE precedes the rebuild always,
+    # and restoring a pre-FTS dump also UPGRADES the DB to have the index.
+    _FTS_OBJ = re.compile(
+        r'^\s*(?:'
+        r'CREATE\s+VIRTUAL\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+["\'`\[]?journal_fts\b'
+        r'|(?:CREATE\s+TABLE|INSERT\s+INTO)\s+["\'`\[]?journal_fts(?:_(?:data|idx|content|docsize|config))?\b'
+        r'|CREATE\s+TRIGGER(?:\s+IF\s+NOT\s+EXISTS)?\s+["\'`\[]?journal_a[iud]\b'
+        r')',
         re.I,
     )
     raw_conn = sqlite3.connect(db)
     dump = '\n'.join(
-        stmt for stmt in raw_conn.iterdump() if not _SHADOW.match(stmt)
+        stmt for stmt in raw_conn.iterdump() if not _FTS_OBJ.match(stmt)
     )
-    dump += "\nINSERT INTO journal_fts(journal_fts) VALUES('rebuild');"
+    dump += (
+        "\nCREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5("
+        "summary, context, tags, content='journal', content_rowid='id');"
+        "\nCREATE TRIGGER IF NOT EXISTS journal_ai AFTER INSERT ON journal BEGIN"
+        "\n    INSERT INTO journal_fts(rowid, summary, context, tags)"
+        " VALUES (new.id, new.summary, new.context, new.tags);\nEND;"
+        "\nCREATE TRIGGER IF NOT EXISTS journal_ad AFTER DELETE ON journal BEGIN"
+        "\n    INSERT INTO journal_fts(journal_fts, rowid, summary, context, tags)"
+        " VALUES ('delete', old.id, old.summary, old.context, old.tags);\nEND;"
+        "\nCREATE TRIGGER IF NOT EXISTS journal_au AFTER UPDATE ON journal BEGIN"
+        "\n    INSERT INTO journal_fts(journal_fts, rowid, summary, context, tags)"
+        " VALUES ('delete', old.id, old.summary, old.context, old.tags);"
+        "\n    INSERT INTO journal_fts(rowid, summary, context, tags)"
+        " VALUES (new.id, new.summary, new.context, new.tags);\nEND;"
+        "\nINSERT INTO journal_fts(journal_fts) VALUES('rebuild');"
+    )
     raw_conn.close()
     conn.close()
 
