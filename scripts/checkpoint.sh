@@ -68,17 +68,29 @@ fi
 # Stage the entire vault subdir. Then commit only if there are staged changes.
 git add -- "$VAULT_DIR"
 
+# ⛔ 2026-09-23 (Fondant): this used to `exit 0` here when nothing was newly staged — BEFORE the push step, and
+#   silently. A vault holding an already-committed but UNPUSHED commit (a manual commit, a previous non-strict push
+#   failure) therefore stayed unpushed forever while every checkpoint returned 0 and printed nothing — the exact
+#   "durability outcome left ambiguous" the push-step header below forbids. Now: nothing new → no commit, but still
+#   push if the branch is AHEAD of its upstream, and always print the outcome.
+COMMITTED=0
 if git diff --cached --quiet -- "$VAULT_DIR"; then
-    # Nothing changed under the vault — bail out cleanly.
-    exit 0
+    AHEAD=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo "")
+    if [ -z "$AHEAD" ]; then
+        echo "checkpoint: nothing new to commit; no upstream configured - durability NOT checked"; exit 0
+    fi
+    if [ "$AHEAD" = "0" ]; then
+        echo "checkpoint: nothing new to commit; already pushed ($(git rev-parse --short HEAD))"; exit 0
+    fi
+    # fall through to the push step with the existing unpushed commit(s)
+else
+    if [ -z "$MSG" ]; then
+        TS=$(date +%Y-%m-%d\ %H:%M)
+        MSG="Checkpoint vault ($TS)"
+    fi
+    git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null
+    COMMITTED=1
 fi
-
-if [ -z "$MSG" ]; then
-    TS=$(date +%Y-%m-%d\ %H:%M)
-    MSG="Checkpoint vault ($TS)"
-fi
-
-git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null
 
 # --- Step 4: push ---
 # THE FINAL LINE MUST STATE THE DURABILITY OUTCOME, NOT JUST THE COMMIT.
@@ -111,4 +123,8 @@ else
     PUSH_STATE="not pushed (--no-push)"
 fi
 
-echo "checkpoint: vault committed at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
+if [ "$COMMITTED" = "1" ]; then
+    echo "checkpoint: vault committed at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
+else
+    echo "checkpoint: nothing new to commit; ${AHEAD} earlier commit(s) were unpushed at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
+fi
