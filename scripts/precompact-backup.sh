@@ -33,6 +33,12 @@ if [ ! -d "$MEMORY_DIR" ]; then
     # Not a knowledge-vault-managed project — skip silently
     exit 0
 fi
+if ! vault_is_real; then
+    # A directory named .knowledge that /knowledge:init never created (e.g. swept into a code repo by a commit).
+    # Writing a transcript here is how one reached a PUBLIC repo (2026-09-25, j:1845). Never write; say why.
+    echo "precompact-backup: $MEMORY_DIR has no meta/session-state.md — not a real vault; NOT writing the transcript (set KNOWLEDGE_VAULT to your vault)" >&2
+    exit 0
+fi
 
 BACKUP_DIR="$MEMORY_DIR/meta/precompact"
 mkdir -p "$BACKUP_DIR"
@@ -40,7 +46,19 @@ mkdir -p "$BACKUP_DIR"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 # 1. Back up transcript (keep last 5)
-cp "$TRANSCRIPT" "$BACKUP_DIR/transcript-${TIMESTAMP}.jsonl"
+# Redact secret-shaped values before the transcript touches disk — it may be committed into the vault and
+# cloned fleet-wide (Brioche 603156). Fail-safe: if the redactor is missing/errors, fall back to a plain copy
+# rather than losing the recovery data, but log it.
+REDACT="$(cd "$(dirname "$0")" && pwd)/redact-secrets.py"
+if [ -f "$REDACT" ] && command -v python3 >/dev/null 2>&1; then
+    if ! python3 "$REDACT" < "$TRANSCRIPT" > "$BACKUP_DIR/transcript-${TIMESTAMP}.jsonl" 2>/dev/null; then
+        echo "precompact-backup: redactor failed; copying UNREDACTED (review $BACKUP_DIR)" >&2
+        cp "$TRANSCRIPT" "$BACKUP_DIR/transcript-${TIMESTAMP}.jsonl"
+    fi
+else
+    echo "precompact-backup: redact-secrets.py not found; copying UNREDACTED" >&2
+    cp "$TRANSCRIPT" "$BACKUP_DIR/transcript-${TIMESTAMP}.jsonl"
+fi
 ls -t "$BACKUP_DIR"/transcript-*.jsonl 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
 
 # 2. Extract recovery hints from the transcript
@@ -87,6 +105,10 @@ else
 fi
 
 # 3. Write a pointer for the boot sequence
+# Recovery.md is built from the UNREDACTED transcript — run it through the same redactor before it rests.
+if [ -f "$REDACT" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$REDACT" < "$RECOVERY_FILE" > "$RECOVERY_FILE.red" 2>/dev/null && mv -f "$RECOVERY_FILE.red" "$RECOVERY_FILE" || rm -f "$RECOVERY_FILE.red"
+fi
 cat > "$BACKUP_DIR/latest-recovery.md" << EOF
 # Latest Pre-Compaction Recovery
 File: recovery-${TIMESTAMP}.md

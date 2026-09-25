@@ -45,6 +45,10 @@ done
 if [ ! -d "$VAULT_DIR" ]; then
     exit 0
 fi
+if ! vault_is_real; then
+    echo "checkpoint: $VAULT_DIR has no meta/session-state.md — not a real vault; NOT committing or pushing (2026-09-25, j:1845)" >&2
+    exit 0
+fi
 
 # Operate in the vault's OWN dir/repo (differs from CWD when KNOWLEDGE_VAULT is absolute).
 cd "$(dirname "$VAULT_DIR")"

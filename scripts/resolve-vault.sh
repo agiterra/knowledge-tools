@@ -19,3 +19,8 @@ case "$VAULT_DIR" in
   *)  VAULT_DIR="$__kv_cwd/$VAULT_DIR" ;;
 esac
 unset __kv_cwd
+
+# vault_is_real — is $VAULT_DIR a REAL vault (initialised by /knowledge:init), not merely a directory named
+# .knowledge? (2026-09-25, j:1845): the pre-compact hook wrote and COMMITTED transcripts into any repo that
+# happened to contain a .knowledge/ dir — one reached a PUBLIC repo. Writers and committers must require this.
+vault_is_real() { [ -f "$VAULT_DIR/meta/session-state.md" ]; }
