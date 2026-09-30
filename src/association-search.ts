@@ -251,6 +251,26 @@ export function searchSemanticIndex(keywords: string[], limit = 10): Association
 
 const VECTOR_SERVICE_URL = process.env.VECTOR_SERVICE_URL ?? "http://127.0.0.1:9801";
 
+// Nothing listening at the vector service URL is a STANDING CONDITION, not a per-call
+// failure: on patisserie no service has run since at least 2026-06-19 (fondant j:1955),
+// and a long-running enrichment process printed "vector service unavailable" on every
+// message. Say the absence ONCE per process; keyword-only fallback is unchanged. Any
+// other error (timeout, HTTP error, bad JSON) is a real failure and still logs every time.
+let vectorAbsenceNoted = false;
+
+/** A refused connection = no service at the URL (Bun: code "ConnectionRefused"; Node: cause.code "ECONNREFUSED"). */
+export function isVectorServiceAbsent(e: unknown): boolean {
+  const err = e as { code?: unknown; cause?: { code?: unknown } } | null;
+  return err?.code === "ConnectionRefused" || err?.code === "ECONNREFUSED" || err?.cause?.code === "ECONNREFUSED";
+}
+
+/** What to log for a vector-search error; null = already said once in this process. */
+export function vectorErrorLine(e: unknown, url: string, alreadyNoted: boolean): string | null {
+  if (!isVectorServiceAbsent(e)) return `[assoc] vector service error at ${url} (${e}) — this call is keyword-only`;
+  if (alreadyNoted) return null;
+  return `[assoc] no vector service at ${url} (connection refused) — associations are keyword-only for this process. Noted once; later refusals are silent.`;
+}
+
 export async function searchVectors(text: string, limit = 10): Promise<AssociationResult[]> {
   if (limit <= 0) return [];
   const vdb = vectorsDb();
@@ -276,7 +296,9 @@ export async function searchVectors(text: string, limit = 10): Promise<Associati
       search_method: "vector",
     }));
   } catch (e) {
-    console.error(`[assoc] vector service unavailable (${e})`);
+    const line = vectorErrorLine(e, VECTOR_SERVICE_URL, vectorAbsenceNoted);
+    if (isVectorServiceAbsent(e)) vectorAbsenceNoted = true;
+    if (line) console.error(line);
     return [];
   }
 }
