@@ -277,6 +277,10 @@ def search_semantic_index(keywords, limit=10):
 VECTOR_SERVICE_URL = os.environ.get("VECTOR_SERVICE_URL", "http://127.0.0.1:9801")
 
 
+class _ServiceOff(Exception):
+    """VECTOR_SERVICE_URL=off — skip the service without logging."""
+
+
 def search_vectors(text, limit=10):
     """Search for semantically similar entries via the Wire vector service.
 
@@ -293,8 +297,14 @@ def search_vectors(text, limit=10):
 
     vault_path = os.path.abspath(os.path.dirname(vectors_db))
 
+    # VECTOR_SERVICE_URL=off: no service on this host BY CONFIGURATION -> go straight to
+    # the in-process search, silently (same switch as association-search.ts).
+    service_off = VECTOR_SERVICE_URL.strip().lower() == "off"
+
     # Try the persistent vector service first (fast — model already loaded)
     try:
+        if service_off:
+            raise _ServiceOff()
         import urllib.request
         req = urllib.request.Request(
             f"{VECTOR_SERVICE_URL}/search",
@@ -317,6 +327,8 @@ def search_vectors(text, limit=10):
                 "search_method": "vector",
             })
         return results
+    except _ServiceOff:
+        pass
     except Exception as e:
         sys.stderr.write(f"[assoc] vector service unavailable ({e}), falling back to in-process\n")
 

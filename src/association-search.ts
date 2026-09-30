@@ -258,6 +258,16 @@ const VECTOR_SERVICE_URL = process.env.VECTOR_SERVICE_URL ?? "http://127.0.0.1:9
 // other error (timeout, HTTP error, bad JSON) is a real failure and still logs every time.
 let vectorAbsenceNoted = false;
 
+/**
+ * VECTOR_SERVICE_URL=off (case-insensitive) = this host has NO vector service, by
+ * configuration. No network call, no log line, keyword results only. Set by the bridge
+ * launchers, which spawn one enrichment process PER EVENT (so "once per process" above
+ * would still print on every message). Brioche 645041.
+ */
+export function vectorServiceOff(url: string = VECTOR_SERVICE_URL): boolean {
+  return url.trim().toLowerCase() === "off";
+}
+
 /** A refused connection = no service at the URL (Bun: code "ConnectionRefused"; Node: cause.code "ECONNREFUSED"). */
 export function isVectorServiceAbsent(e: unknown): boolean {
   const err = e as { code?: unknown; cause?: { code?: unknown } } | null;
@@ -273,6 +283,7 @@ export function vectorErrorLine(e: unknown, url: string, alreadyNoted: boolean):
 
 export async function searchVectors(text: string, limit = 10): Promise<AssociationResult[]> {
   if (limit <= 0) return [];
+  if (vectorServiceOff()) return [];
   const vdb = vectorsDb();
   if (!existsSync(vdb)) return [];
 
