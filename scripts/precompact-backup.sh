@@ -39,6 +39,11 @@ if ! vault_is_real; then
     echo "precompact-backup: $MEMORY_DIR has no meta/session-state.md — not a real vault; NOT writing the transcript (set KNOWLEDGE_VAULT to your vault)" >&2
     exit 0
 fi
+if vault_is_implicit_shared_root; then
+    # Same guard as checkpoint.sh (2026-10-02, Brioche 649049): a transcript must not land in a shared checkout.
+    echo "precompact-backup: $MEMORY_DIR is a SHARED root's vault, reached via cwd with KNOWLEDGE_VAULT unset — NOT writing the transcript (set an absolute KNOWLEDGE_VAULT)" >&2
+    exit 0
+fi
 
 BACKUP_DIR="$MEMORY_DIR/meta/precompact"
 mkdir -p "$BACKUP_DIR"

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 
 const CHECKPOINT = join(import.meta.dir, "..", "scripts", "checkpoint.sh");
 const JOURNAL = join(import.meta.dir, "..", "scripts", "journal.py");
+const PRECOMPACT = join(import.meta.dir, "..", "scripts", "precompact-backup.sh");
 
 function git(cwd: string, ...args: string[]) {
   const r = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -89,6 +90,27 @@ describe("checkpoint shared-root guard", () => {
     const r = run(shared, { KNOWLEDGE_SHARED_ROOTS_FILE: join(root, "absent") });
     expect(r.stderr).not.toContain("SHARED root");
     expect(commits(shared)).toBe(2);
+  });
+
+  function precompact(cwd: string, env: Record<string, string | undefined>) {
+    const t = join(root, "transcript.jsonl");
+    writeFileSync(t, '{"type":"user","message":{"content":"hi"}}\n');
+    const input = JSON.stringify({ transcript_path: t, session_id: "s1", trigger: "auto", cwd });
+    const e: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
+    for (const [k, v] of Object.entries(env)) if (v !== undefined) e[k] = v;
+    return spawnSync("bash", [PRECOMPACT], { cwd, env: e, input, encoding: "utf8" });
+  }
+
+  test("precompact REFUSES a listed root's cwd-resolved vault — no transcript written", () => {
+    const r = precompact(shared, { KNOWLEDGE_SHARED_ROOTS_FILE: roots });
+    expect(existsSync(join(shared, ".knowledge", "meta", "precompact"))).toBe(false);
+    expect(r.stderr).toContain("SHARED root");
+  });
+
+  test("precompact ACCEPTS an unlisted project (control: it does write)", () => {
+    const r = precompact(other, { KNOWLEDGE_SHARED_ROOTS_FILE: roots });
+    expect(existsSync(join(other, ".knowledge", "meta", "precompact", "latest-recovery.md"))).toBe(true);
+    expect(r.stderr).not.toContain("SHARED root");
   });
 
   test("REFUSES through a symlinked cwd (listed path compared physically)", () => {
