@@ -49,6 +49,10 @@ if ! vault_is_real; then
     echo "checkpoint: $VAULT_DIR has no meta/session-state.md — not a real vault; NOT committing or pushing (2026-09-25, j:1845)" >&2
     exit 0
 fi
+if vault_is_implicit_shared_root; then
+    echo "checkpoint: $VAULT_DIR is a SHARED root's vault, reached via cwd with KNOWLEDGE_VAULT unset — NOT exporting, committing or pushing (set an absolute KNOWLEDGE_VAULT to write a vault; 2026-10-02, Brioche 649049)" >&2
+    exit 0
+fi
 
 # Operate in the vault's OWN dir/repo (differs from CWD when KNOWLEDGE_VAULT is absolute).
 cd "$(dirname "$VAULT_DIR")"
