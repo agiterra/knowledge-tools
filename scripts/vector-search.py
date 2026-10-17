@@ -186,7 +186,7 @@ USAGE = """\
 Usage: vector-search.py [options] <query>
 
 Options:
-  --top N           Number of results (default: 5)
+  --top N, --limit N  Return N results (default 5)
   --json            Machine-readable JSON output
   --vault-only      Only search vault file vectors
   --journal-only    Only search journal entry vectors
@@ -215,15 +215,24 @@ if __name__ == '__main__':
     journal_only = '--journal-only' in args
     args = [a for a in args if a != '--journal-only']
 
+    # --limit is an alias for --top (ENG-4949: '--limit 2' used to fall through into the query text).
     top_k = 5
-    if '--top' in args:
-        idx = args.index('--top')
-        if idx + 1 < len(args):
-            top_k = int(args[idx + 1])
-            args = args[:idx] + args[idx + 2:]
-        else:
-            print('Error: --top requires a number')
-            sys.exit(1)
+    for flag in ('--top', '--limit'):
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 < len(args) and args[idx + 1].isdigit():
+                top_k = int(args[idx + 1])
+                args = args[:idx] + args[idx + 2:]
+            else:
+                print(f'Error: {flag} requires a number')
+                sys.exit(1)
+
+    # Any other --flag is a usage error, never query text: a silently-absorbed flag changes the search.
+    unknown = [a for a in args if a.startswith('--')]
+    if unknown:
+        print(f'Error: unknown option(s): {" ".join(unknown)}')
+        print(USAGE)
+        sys.exit(1)
 
     if not args:
         print(USAGE)
