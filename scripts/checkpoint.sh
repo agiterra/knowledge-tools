@@ -96,8 +96,23 @@ else
         TS=$(date +%Y-%m-%d\ %H:%M)
         MSG="Checkpoint vault ($TS)"
     fi
-    git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null
-    COMMITTED=1
+    # ⛔ 2026-11-13 (Fondant): under `set -e` a REFUSED commit (a pre-commit hook: gitleaks found a secret in the
+    #   vault) exited HERE, before the push step. Every later checkpoint was refused the same way, so commits that
+    #   already existed stayed unpushed: baguette's vault went 22 commits / 2 h ahead before the push-staleness
+    #   watch caught it. Their pre-push scan was clean; only the NEW content was refused. Now a refused commit is
+    #   reported, the commits that already exist are still pushed, and the script exits 1 at the end. The
+    #   refusal is never swallowed.
+    if git commit -m "$MSG" --no-gpg-sign -- "$VAULT_DIR" >/dev/null; then
+        COMMITTED=1
+    else
+        COMMIT_RC=$?
+        COMMITTED=2
+        echo "checkpoint: git commit REFUSED (rc=$COMMIT_RC; a pre-commit hook's own output is above). The new vault content is staged, NOT committed." >&2
+        AHEAD=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo "")
+        if [ "${AHEAD:-0}" = "0" ]; then
+            PUSH=0
+        fi
+    fi
 fi
 
 # --- Step 4: push ---
@@ -127,11 +142,20 @@ if [ "$PUSH" = "1" ]; then
     else
         PUSH_STATE="NOT PUSHED - no 'origin' remote"
     fi
+elif [ "$COMMITTED" = "2" ]; then
+    PUSH_STATE="nothing to push"
 else
     PUSH_STATE="not pushed (--no-push)"
 fi
 
-if [ "$COMMITTED" = "1" ]; then
+if [ "$COMMITTED" = "2" ]; then
+    if [ -z "$AHEAD" ]; then
+        echo "checkpoint: COMMIT REFUSED; no upstream configured - durability NOT checked"
+    else
+        echo "checkpoint: COMMIT REFUSED; ${AHEAD} earlier commit(s) at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
+    fi
+    exit 1
+elif [ "$COMMITTED" = "1" ]; then
     echo "checkpoint: vault committed at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
 else
     echo "checkpoint: nothing new to commit; ${AHEAD} earlier commit(s) were unpushed at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
