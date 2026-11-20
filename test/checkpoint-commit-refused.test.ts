@@ -66,6 +66,21 @@ describe("checkpoint: refused commit", () => {
     expect(r.stderr).toContain("git commit REFUSED");
   });
 
+  // 2026-11-20 (baguette ahead=31): a pre-commit scan that outlives the Stop hook's 15 s limit is KILLED mid-commit,
+  // so a push placed after the commit never runs. Earlier commits must reach the remote before the commit step.
+  test("hung pre-commit killed by a timeout: earlier commits are already pushed", () => {
+    earlierCommits(3);
+    const local = git(proj, "rev-parse", "HEAD");
+    const hook = join(proj, ".git", "hooks", "pre-commit");
+    writeFileSync(hook, "#!/bin/sh\nsleep 30\n");
+    chmodSync(hook, 0o755);
+    writeFileSync(join(proj, ".knowledge", "new.md"), "new\n");
+    const r = spawnSync("bash", [CHECKPOINT, "--cwd", proj], { cwd: proj, env: ENV, encoding: "utf8", timeout: 4000, killSignal: "SIGKILL" });
+    expect(r.signal).toBe("SIGKILL");
+    expect(remoteHead(bare)).toBe(local);
+    expect(r.stdout).toContain("pushed 3 earlier commit(s) before the commit step");
+  }, 15000);
+
   test("refused commit with nothing earlier: no push, exits 1", () => {
     const before = remoteHead(bare);
     refuseCommits();

@@ -64,6 +64,23 @@ fi
 # --- Step 1: journal backup ---
 # Find journal.py and run the safe backup (atomic replace + verification).
 # The script lives in the same directory as this one.
+# ⛔ 2026-11-20 (Fondant, VAULT-PUSH-STALE baguette ahead=31): push commits that ALREADY exist BEFORE the commit
+#   step. The 0.2.16 fix pushes them after a REFUSED commit, but a pre-commit hook that runs long (gitleaks over 794
+#   staged kit files) never returns inside the Stop hook's 15 s limit: the harness kills this script mid-commit
+#   and the push step never runs. Earlier commits must not wait on a scan of new content.
+EARLY_PUSHED=0
+if [ "$PUSH" = "1" ] && git remote get-url origin >/dev/null 2>&1; then
+    EARLY_AHEAD=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo "")
+    if [ -n "$EARLY_AHEAD" ] && [ "$EARLY_AHEAD" != "0" ]; then
+        if git push -q 2>/dev/null; then
+            EARLY_PUSHED="$EARLY_AHEAD"
+            echo "checkpoint: pushed ${EARLY_AHEAD} earlier commit(s) before the commit step ($(git rev-parse --short HEAD))"
+        else
+            echo "checkpoint: early push of ${EARLY_AHEAD} earlier commit(s) FAILED; the push step below retries" >&2
+        fi
+    fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JOURNAL_PY="$SCRIPT_DIR/journal.py"
 
@@ -149,7 +166,9 @@ else
 fi
 
 if [ "$COMMITTED" = "2" ]; then
-    if [ -z "$AHEAD" ]; then
+    if [ "$EARLY_PUSHED" != "0" ] && [ "${AHEAD:-0}" = "0" ]; then
+        echo "checkpoint: COMMIT REFUSED; ${EARLY_PUSHED} earlier commit(s) at $(git rev-parse --short HEAD) - pushed before the commit step"
+    elif [ -z "$AHEAD" ]; then
         echo "checkpoint: COMMIT REFUSED; no upstream configured - durability NOT checked"
     else
         echo "checkpoint: COMMIT REFUSED; ${AHEAD} earlier commit(s) at $(git rev-parse --short HEAD) - ${PUSH_STATE}"
